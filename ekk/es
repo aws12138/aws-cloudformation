@@ -1,0 +1,709 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Create an Apache webserver, with Kinesis Firehose Agent which will stream the apache access logs to an Amazon Elacticseach Cluster",
+  "Parameters": {
+    "InstanceType": {
+      "Description": "WebServer EC2 instance type",
+      "Type": "String",
+      "Default": "t2.small",
+      "AllowedValues": [
+        "t1.micro",
+        "t2.nano",
+        "t2.micro",
+        "t2.small"
+      ],
+      "ConstraintDescription": "must be a valid EC2 instance type."
+    },
+    "WebServerPort": {
+      "Description": "TCP/IP port of the web server",
+      "Type": "String",
+      "Default": "80"
+    },
+    "KeyName": {
+      "Description": "Name of an existing EC2 KeyPair to enable SSH access to the instances",
+      "Type": "AWS::EC2::KeyPair::KeyName",
+      "ConstraintDescription": "must be the name of an existing EC2 KeyPair."
+    },
+    "SSHLocation": {
+      "Description": " The IP address range that can be used to SSH to the EC2 instances",
+      "Type": "String",
+      "MinLength": "9",
+      "MaxLength": "18",
+      "Default": "0.0.0.0/0",
+      "AllowedPattern": "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})",
+      "ConstraintDescription": "must be a valid IP CIDR range of the form x.x.x.x/x."
+    }
+  },
+  "Mappings": {
+    "AWSInstanceType2Arch": {
+      "t1.micro": {
+        "Arch": "PV64"
+      },
+      "t2.nano": {
+        "Arch": "HVM64"
+      },
+      "t2.micro": {
+        "Arch": "HVM64"
+      },
+      "t2.small": {
+        "Arch": "HVM64"
+      }
+    },
+    "AWSRegionArch2AMI": {
+      "us-east-1": {
+        "PV64": "ami-22111148",
+        "HVM64": "ami-08111162",
+        "HVMG2": "ami-ebcec381"
+      },
+      "us-west-2": {
+        "PV64": "ami-792bc219",
+        "HVM64": "ami-c229c0a2",
+        "HVMG2": "ami-0f28c06f"
+      },
+      "us-west-1": {
+        "PV64": "ami-0e087a6e",
+        "HVM64": "ami-1b0f7d7b",
+        "HVMG2": "ami-ab9defcb"
+      },
+      "eu-west-1": {
+        "PV64": "ami-a5368cd6",
+        "HVM64": "ami-31328842",
+        "HVMG2": "ami-d1d652a2"
+      },
+      "eu-central-1": {
+        "PV64": "ami-2bde3944",
+        "HVM64": "ami-e2df388d",
+        "HVMG2": "ami-5240a73d"
+      },
+      "ap-northeast-1": {
+        "PV64": "ami-37020959",
+        "HVM64": "ami-f80e0596",
+        "HVMG2": "ami-34a9a35a"
+      },
+      "ap-northeast-2": {
+        "PV64": "NOT_SUPPORTED",
+        "HVM64": "ami-6598510b",
+        "HVMG2": "NOT_SUPPORTED"
+      },
+      "ap-southeast-1": {
+        "PV64": "ami-ff0cc79c",
+        "HVM64": "ami-e90dc68a",
+        "HVMG2": "ami-6f6ca70c"
+      },
+      "ap-southeast-2": {
+        "PV64": "ami-f5210196",
+        "HVM64": "ami-f2210191",
+        "HVMG2": "ami-88c1e1eb"
+      },
+      "sa-east-1": {
+        "PV64": "ami-661e930a",
+        "HVM64": "ami-1e159872",
+        "HVMG2": "NOT_SUPPORTED"
+      },
+      "cn-north-1": {
+        "PV64": "ami-08ef2465",
+        "HVM64": "ami-49e22924",
+        "HVMG2": "NOT_SUPPORTED"
+      }
+    }
+  },
+  "Resources": {
+    "ESDomain": {
+      "Type": "AWS::Elasticsearch::Domain",
+      "Properties": {
+        "ElasticsearchClusterConfig": {
+          "DedicatedMasterEnabled": "true",
+          "InstanceCount": "2",
+          "ZoneAwarenessEnabled": "true",
+          "InstanceType": "t2.micro.elasticsearch",
+          "DedicatedMasterType": "t2.micro.elasticsearch",
+          "DedicatedMasterCount": "2"
+        },
+        "EBSOptions": {
+          "EBSEnabled": true,
+          "Iops": 0,
+          "VolumeSize": 20,
+          "VolumeType": "gp2"
+        },
+        "SnapshotOptions": {
+          "AutomatedSnapshotStartHour": "0"
+        },
+        "AccessPolicies": {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "*"
+            },
+            "Action": "es:*",
+            "Resource": "*"
+          }]
+        },
+        "AdvancedOptions": {
+          "rest.action.multi.allow_explicit_index": "true"
+        }
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Designer": {
+          "id": "fba11830-bc30-488a-b72f-714b60bc1c03"
+        }
+      }
+    },
+    "myS3Bucket": {
+      "Type": "AWS::S3::Bucket",
+      "DependsOn": "ESDomain",
+      "Properties": {
+        "BucketName": {
+          "Fn::Join": ["-", [
+            "logbackup", {
+              "Ref": "ESDomain"
+            }
+          ]]
+        }
+      }
+    },
+    "ElasticsearchRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {
+              "Service": [
+                "ec2.amazonaws.com"
+              ]
+            },
+            "Action": [
+              "sts:AssumeRole"
+            ]
+          }]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/AmazonESFullAccess",
+          "arn:aws:iam::aws:policy/AmazonS3FullAccess",
+          "arn:aws:iam::aws:policy/AmazonKinesisFirehoseFullAccess",
+          "arn:aws:iam::aws:policy/CloudWatchFullAccess"
+        ],
+        "Path": "/"
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Designer": {
+          "id": "1b55e800-07a6-496a-8228-0425548c67b4"
+        }
+      }
+    },
+    "RolePolicies": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "elasticsearch",
+        "PolicyDocument": {
+          "Statement": [{
+            "Effect": "Allow",
+            "Action": [
+              "cloudwatch:GetMetricStatistics",
+              "cloudwatch:ListMetrics",
+              "cloudwatch:PutMetricAlarm",
+              "cloudwatch:PutMetricData",
+              "cloudwatch:SetAlarmState"
+            ],
+            "Resource": "*"
+          }]
+        },
+        "Roles": [{
+          "Ref": "ElasticsearchRole"
+        }]
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Designer": {
+          "id": "8657a059-dd21-4eed-a4bf-15cec3644c18"
+        }
+      }
+    },
+    "ElasticsearchInstanceProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Properties": {
+        "Path": "/",
+        "Roles": [{
+          "Ref": "ElasticsearchRole"
+        }]
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Designer": {
+          "id": "738a30bf-e431-411f-bfac-9c70ce80771f"
+        }
+      }
+    },
+    "WebServerInstance": {
+      "Type": "AWS::EC2::Instance",
+      "DependsOn": "ESDomain",
+      "Metadata": {
+        "AWS::CloudFormation::Init": {
+          "configSets": {
+            "InstallAndRun": ["Install"]
+          },
+          "Install": {
+            "packages": {
+              "yum": {
+                "httpd": [],
+                "aws-kinesis-agent": []
+              }
+            },
+            "files": {
+              "/var/www/html/index.html": {
+                "source": "https://s3-us-west-2.amazonaws.com/scriptdepot/index.html",
+                "mode": "000600",
+                "owner": "apache",
+                "group": "apache"
+              },
+              "/etc/aws-kinesis/agent.json": {
+                "source": "https://s3-us-west-2.amazonaws.com/scriptdepot/agent.json",
+                "mode": "000644",
+                "owner": "root",
+                "group": "root"
+              },
+              "/home/ec2-user/curl.sh": {
+                "content": {
+                  "Fn::Join": [
+                    "", [
+                      "#!/bin/bash -xe\n",
+                      "curl -XPOST ", {
+                        "Fn::GetAtt": [
+                          "ESDomain",
+                          "DomainEndpoint"
+                        ]
+                      },
+                      "./logmonitor -d '{",
+                      "\n",
+                      "\"mappings\" : {\n",
+                      "\"log\" : {\n",
+                      "\"properties\" : {\n",
+                      "\"host\": { \"index\": \"analyzed\", \"store\": \"yes\", \"type\": \"string\"},\n",
+                      "\"datetime\": { \"index\": \"analyzed\", \"store\": \"yes\", \"type\": \"date\" ,\"format\" : \"dd/MMM/yyyy:HH:mm:ss Z\"},\n",
+                      "\"request\": { \"index\": \"not_analyzed\", \"store\": \"yes\", \"type\": \"string\" },\n",
+                      "\"response\": { \"index\": \"not_analyzed\", \"store\": \"yes\", \"type\": \"string\" },\n",
+                      "\"bytes\": { \"index\": \"not_analyzed\", \"store\": \"yes\", \"type\": \"string\" }}}}}'"
+                    ]
+                  ]
+                },
+                "mode": "000777",
+                "owner": "root",
+                "group": "root"
+              },
+              "/etc/cfn/cfn-hup.conf": {
+                "content": {
+                  "Fn::Join": [
+                    "", [
+                      "[main]\n",
+                      "stack=", {
+                        "Ref": "AWS::StackId"
+                      },
+                      "\n",
+                      "region=", {
+                        "Ref": "AWS::Region"
+                      },
+                      "\n"
+                    ]
+                  ]
+                },
+                "mode": "000400",
+                "owner": "root",
+                "group": "root"
+              },
+              "/etc/cfn/hooks.d/cfn-auto-reloader.conf": {
+                "content": {
+                  "Fn::Join": [
+                    "", [
+                      "[cfn-auto-reloader-hook]\n",
+                      "triggers=post.update\n",
+                      "path=Resources.WebServerInstance.Metadata.AWS::CloudFormation::Init\n",
+                      "action=/opt/aws/bin/cfn-init -v ",
+                      "         --stack ", {
+                        "Ref": "AWS::StackName"
+                      },
+                      "         --resource WebServerInstance ",
+                      "         --configsets InstallAndRun ",
+                      "         --region ", {
+                        "Ref": "AWS::Region"
+                      },
+                      "\n",
+                      "runas=root\n"
+                    ]
+                  ]
+                }
+              }
+            },
+            "commands": {
+              "00_RunIndex": {
+                "command": "sh /home/ec2-user/curl.sh > /home/ec2-user/curl.log",
+                "cwd": "/home/ec2-user/",
+                "ignoreErrors": "true"
+              },
+              "01_RunIndex": {
+                "command": "sudo chown aws-kinesis-agent-user:aws-kinesis-agent-user httpd",
+                "cwd": "/var/log",
+                "ignoreErrors": "true"
+              }
+            },
+            "services": {
+              "sysvinit": {
+                "httpd": {
+                  "enabled": "true",
+                  "ensureRunning": "true"
+                },
+                "aws-kinesis-agent": {
+                  "enabled": "true",
+                  "ensureRunning": "true"
+                },
+                "cfn-hup": {
+                  "enabled": "true",
+                  "ensureRunning": "true",
+                  "files": [
+                    "/etc/cfn/cfn-hup.conf",
+                    "/etc/cfn/hooks.d/cfn-auto-reloader.conf"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "Properties": {
+        "ImageId": {
+          "Fn::FindInMap": [
+            "AWSRegionArch2AMI", {
+              "Ref": "AWS::Region"
+            }, {
+              "Fn::FindInMap": [
+                "AWSInstanceType2Arch", {
+                  "Ref": "InstanceType"
+                },
+                "Arch"
+              ]
+            }
+          ]
+        },
+        "InstanceType": {
+          "Ref": "InstanceType"
+        },
+        "SecurityGroups": [{
+          "Ref": "WebServerSecurityGroup"
+        }],
+        "KeyName": {
+          "Ref": "KeyName"
+        },
+        "IamInstanceProfile": {
+          "Ref": "ElasticsearchInstanceProfile"
+        },
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "", [
+                "#!/bin/bash -xe\n",
+                "date > /home/ec2-user/starttime\n",
+                "yum update -y aws-cfn-bootstrap\n",
+                "# Install the files and packages from the metadata\n",
+                "/opt/aws/bin/cfn-init -v ",
+                "         --stack ", {
+                  "Ref": "AWS::StackName"
+                },
+                "         --resource WebServerInstance ",
+                "         --configsets InstallAndRun ",
+                "         --region ", {
+                  "Ref": "AWS::Region"
+                },
+                "\n",
+                "date > /home/ec2-user/intertime",
+                "# Signal the status from cfn-init\n",
+                "/opt/aws/bin/cfn-signal -e $? ",
+                "         --stack ", {
+                  "Ref": "AWS::StackName"
+                },
+                "         --resource WebServerInstance ",
+                "         --region ", {
+                  "Ref": "AWS::Region"
+                },
+                "\n",
+                "date > /home/ec2-user/stoptime"
+              ]
+            ]
+          }
+        }
+      }
+    },
+    "S3DeliveryRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {
+              "Service": [
+                "firehose.amazonaws.com"
+              ]
+            },
+            "Action": [
+              "sts:AssumeRole"
+            ]
+          }]
+        }
+      }
+    },
+    "RolePolicies": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "s3Access",
+        "PolicyDocument": {
+          "Statement": [{
+            "Effect": "Allow",
+            "Action": [
+              "s3:PutObject"
+            ],
+            "Resource": {
+              "Fn::Join": ["", ["arn:aws:s3:::", {
+                "Ref": "myS3Bucket"
+              }]]
+            }
+          }]
+        },
+        "Roles": [{
+          "Ref": "S3DeliveryRole"
+        }]
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Designer": {
+          "id": "8657a059-dd21-4eed-a4bf-15cec3644c18"
+        }
+      }
+    },
+    "ESDeliveryRole": {
+      "Type": "AWS::IAM::Role",
+      "DependsOn": "S3DeliveryRole",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {
+              "Service": [
+                "firehose.amazonaws.com"
+              ]
+            },
+            "Action": [
+              "sts:AssumeRole"
+            ]
+          }]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/AmazonESFullAccess"
+        ],
+        "Path": "/"
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Designer": {
+          "id": "d3d0f540-92e1-40fa-832f-c144b8b36f0c"
+        }
+      }
+    },
+    "LogGroup1": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 7
+      }
+    },
+    "LogGroup2": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 7
+      }
+    },
+    "LogStream1": {
+      "Type": "AWS::Logs::LogStream",
+      "Properties": {
+        "LogGroupName": {
+          "Ref": "LogGroup1"
+        },
+        "LogStreamName": "ElasticsearchDelivery"
+      }
+    },
+    "LogStream2": {
+      "Type": "AWS::Logs::LogStream",
+      "Properties": {
+        "LogGroupName": {
+          "Ref": "LogGroup2"
+        },
+        "LogStreamName": "S3Delivery"
+      }
+    },
+    "ElasticSearchDeliveryStream": {
+      "Type": "AWS::KinesisFirehose::DeliveryStream",
+      "DependsOn": "WebServerInstance",
+      "Properties": {
+        "ElasticsearchDestinationConfiguration": {
+          "BufferingHints": {
+            "IntervalInSeconds": 60,
+            "SizeInMBs": 50
+          },
+          "CloudWatchLoggingOptions": {
+            "Enabled": true,
+            "LogGroupName": {
+              "Ref": "LogGroup1"
+            },
+            "LogStreamName": "ElasticsearchDelivery"
+          },
+          "DomainARN": {
+            "Fn::GetAtt": ["ESDomain", "DomainArn"]
+          },
+          "IndexName": "logmonitor",
+          "IndexRotationPeriod": "NoRotation",
+          "TypeName": "log",
+          "RetryOptions": {
+            "DurationInSeconds": "60"
+          },
+          "RoleARN": {
+            "Fn::GetAtt": [
+              "ESDeliveryRole",
+              "Arn"
+            ]
+          },
+          "S3BackupMode": "AllDocuments",
+          "S3Configuration": {
+            "BucketARN": {
+              "Fn::Join": [
+                "", [
+                  "arn:aws:s3:::", 
+                       { "Ref": "myS3Bucket" }
+                      ]
+                    ]
+                  },
+            "BufferingHints": {
+              "IntervalInSeconds": "300",
+              "SizeInMBs": "10"
+            },
+            "CompressionFormat": "UNCOMPRESSED",
+            "Prefix": "firehose/",
+            "RoleARN": {
+              "Fn::GetAtt": [
+                "S3DeliveryRole",
+                "Arn"
+              ]
+            },
+            "CloudWatchLoggingOptions": {
+              "Enabled": true,
+              "LogGroupName": {
+                "Ref": "LogGroup2"
+              },
+              "LogStreamName": "S3Delivery"
+            }
+          }
+        }
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Designer": {
+          "id": "deb8e7ee-c141-41bb-8caf-08c76246dbf7"
+        }
+      }
+    },
+    "WebServerSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Enable HTTP access via port 80",
+        "SecurityGroupIngress": [{
+          "IpProtocol": "tcp",
+          "FromPort": "80",
+          "ToPort": "80",
+          "CidrIp": "0.0.0.0/0"
+        }, {
+          "IpProtocol": "tcp",
+          "FromPort": "22",
+          "ToPort": "22",
+          "CidrIp": {
+            "Ref": "SSHLocation"
+          }
+        }]
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Designer": {
+          "id": "02b23496-7a1d-4410-829b-d4d7aa9b4714"
+        }
+      }
+    },
+    "MyLoadBalancer": {
+      "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
+      "DependsOn": "WebServerInstance",
+      "Properties": {
+        "AvailabilityZones": {
+          "Fn::GetAZs": ""
+        },
+        "Instances": [{
+          "Ref": "WebServerInstance"
+        }],
+        "Listeners": [{
+          "LoadBalancerPort": "80",
+          "InstancePort": "80",
+          "Protocol": "HTTP"
+        }],
+        "HealthCheck": {
+          "Target": "HTTP:80/index.html",
+          "HealthyThreshold": "3",
+          "UnhealthyThreshold": "5",
+          "Interval": "30",
+          "Timeout": "5"
+        }
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Designer": {
+          "id": "5650892e-768c-429d-8936-2a7e29a7e69f"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "DomainARN": {
+      "Value": {
+        "Fn::GetAtt": [
+          "ESDomain",
+          "DomainArn"
+        ]
+      },
+      "Description": "DomainARN"
+    },
+    "ESDomainURL": {
+      "Value": {
+        "Fn::GetAtt": [
+          "ESDomain",
+          "DomainEndpoint"
+        ]
+      },
+      "Description": "DomainEndPoint"
+    },
+    "KinesisFirehoseDeliveryName": {
+      "Description": "Name of the Kinesis Firehose Delivery Stream Created",
+      "Value": {
+        "Ref": "ElasticSearchDeliveryStream"
+      }
+    },
+    "WebserverIP": {
+      "Value": {
+        "Fn::GetAtt": [
+          "WebServerInstance",
+          "PublicIp"
+        ]
+      },
+      "Description": "Webserver IP to SSH"
+    },
+    "WebsiteURL": {
+      "Description": "URL for the newly created Apache webserver",
+      "Value": {
+        "Fn::Join": [
+          "", [
+            "http://", {
+              "Fn::GetAtt": [
+                "WebServerInstance",
+                "PublicDnsName"
+              ]
+            }
+          ]
+        ]
+      }
+    }
+  }
+}
